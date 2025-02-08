@@ -5,3 +5,4 @@ output/
 temp/
 logs/
 *.log
+*.sqlite
