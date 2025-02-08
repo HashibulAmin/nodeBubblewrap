@@ -17,7 +17,7 @@ const app = express();
 app.use(express.json());
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   SQLite DATABASE INITIALIZATION
+   SQLITE DATABASE INITIALIZATION
 ──────────────────────────────────────────────────────────────────────────────── */
 
 // Path to the SQLite file
@@ -28,11 +28,12 @@ const db = new sqlite3.Database(dbPath, (err) => {
     console.error("Error opening SQLite database:", err);
   } else {
     console.log("Connected to SQLite database");
-    // Create the jobs table if it doesn't exist
+    // Create the jobs table if it doesn't exist (includes an 'updated' field)
     db.run(`CREATE TABLE IF NOT EXISTS jobs (
       jobId TEXT PRIMARY KEY,
       status TEXT,
       created INTEGER,
+      updated INTEGER,
       files TEXT,
       error TEXT
     )`, (err) => {
@@ -47,7 +48,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
    IN-MEMORY JOB STORE & QUEUE
 ──────────────────────────────────────────────────────────────────────────────── */
 
-// In-memory job store (jobId -> { status, created, files, error })
+// In-memory job store (jobId -> { status, created, updated, files, error })
 const jobs = {};
 
 // In-memory queue for conversion jobs
@@ -56,19 +57,20 @@ let isProcessing = false;
 
 // Helper: Insert a new job into the SQLite DB
 function insertJob(jobId, status, created) {
-  db.run("INSERT INTO jobs (jobId, status, created) VALUES (?, ?, ?)",
-    [jobId, status, created],
+  db.run("INSERT INTO jobs (jobId, status, created, updated) VALUES (?, ?, ?, ?)",
+    [jobId, status, created, created],
     (err) => {
       if (err) console.error("Error inserting job:", err);
     }
   );
 }
 
-// Helper: Update a job in the SQLite DB
+// Helper: Update a job in the SQLite DB (updates the 'updated' field automatically)
 function updateJob(jobId, status, files, error) {
+  const updated = Date.now();
   db.run(
-    "UPDATE jobs SET status = ?, files = ?, error = ? WHERE jobId = ?",
-    [status, files ? JSON.stringify(files) : null, error, jobId],
+    "UPDATE jobs SET status = ?, files = ?, error = ?, updated = ? WHERE jobId = ?",
+    [status, files ? JSON.stringify(files) : null, error, updated, jobId],
     (err) => {
       if (err) console.error("Error updating job:", err);
     }
@@ -133,15 +135,17 @@ async function processQueue() {
   const job = jobQueue.shift();
   try {
     const files = await processConversionJob(job);
-    // Update in-memory job status
+    // Update in-memory job status and timestamp
     jobs[job.jobId].status = 'completed';
     jobs[job.jobId].files = files;
+    jobs[job.jobId].updated = Date.now();
     // Update the SQLite DB row
     updateJob(job.jobId, 'completed', files, null);
   } catch (error) {
     console.error(`Error processing job ${job.jobId}:`, error);
     jobs[job.jobId].status = 'failed';
     jobs[job.jobId].error = error.message;
+    jobs[job.jobId].updated = Date.now();
     updateJob(job.jobId, 'failed', null, error.message);
   }
   isProcessing = false;
@@ -199,13 +203,14 @@ app.post('/convert', upload.single('icon'), async (req, res) => {
       });
     }
 
-    // Generate a unique job ID
+    // Generate a unique job ID and current timestamp
     const jobId = uuidv4();
     const created = Date.now();
-    // Save job metadata in-memory
+    // Save job metadata in-memory (including the updated time)
     jobs[jobId] = {
       status: 'pending',
       created,
+      updated: created,
       files: null,
       error: null
     };
@@ -241,7 +246,7 @@ app.post('/convert', upload.single('icon'), async (req, res) => {
 });
 
 // GET /job/:jobId
-// Returns the job metadata from the SQLite DB (including status and file info)
+// Returns the job metadata from the SQLite DB (including status, files, updated time, etc.)
 app.get('/job/:jobId', (req, res) => {
   const { jobId } = req.params;
   db.get("SELECT * FROM jobs WHERE jobId = ?", [jobId], (err, row) => {

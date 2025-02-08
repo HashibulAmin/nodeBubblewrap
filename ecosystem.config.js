@@ -1,6 +1,6 @@
 module.exports = {
     apps: [{
-        name: 'pwa-converter',
+        name: 'NodeBubblewrap',
         script: 'src/app.js',
         instances: 1,
         autorestart: true,
