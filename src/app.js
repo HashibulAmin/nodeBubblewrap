@@ -81,12 +81,11 @@ function updateJob(jobId, status, files, error) {
    JOB PROCESSING FUNCTIONS
 ──────────────────────────────────────────────────────────────────────────────── */
 
-// Process a single conversion job
 async function processConversionJob(job) {
   const timestamp = Date.now();
   const urlHash = Buffer.from(job.url).toString('base64').replace(/[\/\+]/g, '_');
 
-  // Create a dedicated "temp" folder if it doesn't exist
+  console.log(`Job ${job.jobId}: Creating temp folder...`);
   const tempFolder = path.join(__dirname, '..', 'temp');
   if (!fs.existsSync(tempFolder)) {
     fs.mkdirSync(tempFolder, { recursive: true });
@@ -94,19 +93,24 @@ async function processConversionJob(job) {
   const projectDir = path.join(tempFolder, `pwa_${timestamp}_${urlHash}`);
   await cleanupOldFiles(projectDir);
 
-  // Generate icons and process the manifest using the uploaded icon file
+  console.log(`Job ${job.jobId}: Generating icons...`);
   const icons = await iconGenerator.generateIcons(job.iconPath, projectDir);
+
+  console.log(`Job ${job.jobId}: Processing manifest...`);
   const manifest = await manifestProcessor.processManifest(job.manifestUrl, icons);
-  
   const manifestPath = path.join(projectDir, 'manifest.json');
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
-  // Run bubblewrap commands (using the project directory as working directory)
+  console.log(`Job ${job.jobId}: Running bubblewrap init...`);
   await execPromise(`bubblewrap init --manifest ${manifestPath} --directory ${projectDir} --yes`);
+  
+  console.log(`Job ${job.jobId}: Running bubblewrap build...`);
   await execPromise(`bubblewrap build`, { cwd: projectDir });
+  
+  console.log(`Job ${job.jobId}: Running bubblewrap build for AAB...`);
   await execPromise(`bubblewrap build --android-app-bundle`, { cwd: projectDir });
 
-  // Move the generated APK and AAB files to the output folder
+  console.log(`Job ${job.jobId}: Moving output files...`);
   const outputDir = path.join(__dirname, '..', config.outputDir);
   const apkPath = path.join(projectDir, 'app-release-signed.apk');
   const aabPath = path.join(projectDir, 'app-release-bundle.aab');
@@ -116,16 +120,17 @@ async function processConversionJob(job) {
   fs.copyFileSync(apkPath, outputApkPath);
   fs.copyFileSync(aabPath, outputAabPath);
 
-  // Clean up temporary files and remove the uploaded icon file
+  console.log(`Job ${job.jobId}: Cleaning up temporary files...`);
   await cleanupOldFiles(projectDir);
   fs.unlinkSync(job.iconPath);
 
-  // Return the names of the generated files
+  console.log(`Job ${job.jobId}: Finished processing.`);
   return {
     apk: path.basename(outputApkPath),
     aab: path.basename(outputAabPath)
   };
 }
+
 
 // Worker: Process queued jobs sequentially
 async function processQueue() {
