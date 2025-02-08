@@ -45,10 +45,18 @@ const upload = multer({
 app.post('/convert', upload.single('icon'), async (req, res) => {
     try {
         const { url, manifestUrl } = req.body;
-        
-        if (!url || !manifestUrl || !req.file) {
-            return res.status(400).json({ 
-                error: 'Missing required parameters' 
+
+        // Collect missing fields
+        const missingParams = [];
+        if (!url) missingParams.push({ field: "url", expectedType: "string" });
+        if (!manifestUrl) missingParams.push({ field: "manifestUrl", expectedType: "string" });
+        if (!req.file) missingParams.push({ field: "icon", expectedType: "file" });
+
+        // Return detailed error if any parameter is missing
+        if (missingParams.length > 0) {
+            return res.status(400).json({
+                error: "Missing or invalid parameters",
+                details: missingParams
             });
         }
 
