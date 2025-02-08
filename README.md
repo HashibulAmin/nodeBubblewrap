@@ -13,7 +13,7 @@ npm start
 ```
 
 ## API Endpoint
-- `POST /convert` - Upload a manifest.json file for conversion.
+- `POST /convert` - Upload a manifest.json file with URL for conversion.
 
 
 # PWA to APK/AAB Converter
@@ -110,8 +110,8 @@ pm2 --version
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/pwa-to-apk-converter.git
-cd pwa-to-apk-converter
+git clone https://github.com/HashibulAmin/nodeBubblewrap.git
+cd nodeBubblewrap
 
 # Install dependencies
 npm install
