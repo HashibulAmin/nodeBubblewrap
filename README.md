@@ -90,6 +90,23 @@ bubblewrap doctor
 bubblewrap update
 ```
 
+# Update core/src/lib/jdk/JdkHelper.ts
+```bash
+static getJavaHome(jdkPath, process) {
+        const joinPath = (process.platform === 'win32') ? path.win32.join : path.posix.join;
+        if (process.platform === 'darwin') {
+          // If jdkPath already ends with '/Contents/Home' (with or without a trailing slash), return as is.
+          if (jdkPath.endsWith('/Contents/Home') || jdkPath.endsWith('/Contents/Home/')) {
+            return jdkPath;
+          }
+          return joinPath(jdkPath, '/Contents/Home/');
+        } else if (process.platform === 'linux' || process.platform === 'win32') {
+          return joinPath(jdkPath, '/');
+        }
+        throw new Error(`Unsupported Platform: ${process.platform}`);
+     }
+```
+
 Common Bubblewrap requirements:
 - Android SDK Build-Tools
 - Android SDK Command-line Tools

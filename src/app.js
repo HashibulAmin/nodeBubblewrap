@@ -149,22 +149,29 @@ async function processConversionJob(job) {
   await generator.createTwaProject(projectDir, twaManifest, log);
   console.log(`[Job ${job.jobId}] TWA project created.`);
 
-  // Ensure process.env.JAVA_HOME is set. Use config.jdkPath as fallback.
-  if (!process.env.JAVA_HOME) {
-    process.env.JAVA_HOME = config.jdkPath;
-    console.log(`[Job ${job.jobId}] Set process.env.JAVA_HOME to ${process.env.JAVA_HOME}`);
-  }
+  // Write the TWA manifest file (twa-manifest.json) to the project directory.
+  const twaManifestPath = path.join(projectDir, 'twa-manifest.json');
+  fs.writeFileSync(twaManifestPath, JSON.stringify(twaManifest.toJson(), null, 2));
+  console.log(`[Job ${job.jobId}] TWA manifest saved to ${twaManifestPath}.`);
 
-  // Create a Config instance using the Config class.
-  // This instance will be passed to AndroidSdkTools.create.
+  // Ensure process.env.JAVA_HOME is set. Use config.jdkPath as fallback.
+  if (!process.env.JDK_HOME) {
+    process.env.JDK_HOME = config.jdkPath;  // For example, '/Library/Java/JavaVirtualMachines/zulu-17.jdk'
+    console.log(`[Job ${job.jobId}] Set process.env.JDK_HOME to ${process.env.JDK_HOME}`);
+  }
+  
+  // Create a Config instance using the Config class from @bubblewrap/core.
   const configInstance = new Config(
-    process.env.JAVA_HOME || config.jdkPath,
-    process.env.ANDROID_HOME || config.androidSdkPath
+    process.env.JDK_HOME,
+    process.env.ANDROID_HOME || config.androidHome
   );
+  
+  // Initialize JdkHelper with the process object and the config instance.
+  console.log(configInstance);
 
   // Initialize JdkHelper, AndroidSdkTools, and GradleWrapper.
   console.log(`[Job ${job.jobId}] Initializing JdkHelper...`);
-  const jdkHelper = new JdkHelper(process);
+  const jdkHelper = new JdkHelper(process, configInstance);
   console.log(`[Job ${job.jobId}] Creating AndroidSdkTools...`);
   const androidSdkTools = await AndroidSdkTools.create(process, configInstance, jdkHelper, log);
   console.log(`[Job ${job.jobId}] Initializing GradleWrapper...`);
@@ -179,21 +186,49 @@ async function processConversionJob(job) {
   await gradle.bundleRelease();
   console.log(`[Job ${job.jobId}] AAB build completed.`);
 
-  // Define paths for the generated files.
-  const outputDir = path.join(__dirname, '..', config.outputDir);
-  const apkFilePath = path.join(projectDir, 'app-release-signed.apk');
-  const aabFilePath = path.join(projectDir, 'app-release-bundle.aab');
-  const outputApkPath = path.join(outputDir, `${urlHash}_${timestamp}.apk`);
-  const outputAabPath = path.join(outputDir, `${urlHash}_${timestamp}.aab`);
+// Define the output directory (ensure it exists)
+const outputDir = path.join(__dirname, '..', config.outputDir);
+if (!fs.existsSync(outputDir)) {
+  fs.mkdirSync(outputDir, { recursive: true });
+  console.log(`[Job ${job.jobId}] Created output directory at ${outputDir}.`);
+}
 
-  console.log(`[Job ${job.jobId}] Copying APK from ${apkFilePath} to ${outputApkPath}...`);
-  fs.copyFileSync(apkFilePath, outputApkPath);
-  console.log(`[Job ${job.jobId}] Copying AAB from ${aabFilePath} to ${outputAabPath}...`);
-  fs.copyFileSync(aabFilePath, outputAabPath);
+// Define the expected file paths for the APK and AAB.
+// These are the file names as assumed by your current configuration.
+const apkFilePath = path.join(projectDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk');
+const aabFilePath = path.join(projectDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab');
+const outputApkPath = path.join(outputDir, `${urlHash}_${timestamp}.apk`);
+const outputAabPath = path.join(outputDir, `${urlHash}_${timestamp}.aab`);
 
-  // Clean up temporary files.
-  console.log(`[Job ${job.jobId}] Cleaning up temporary files in ${projectDir}...`);
-  await cleanupOldFiles(projectDir);
+// List files in the project directory to help diagnose if the files exist.
+const filesInProject = fs.readdirSync(projectDir);
+console.log(`[Job ${job.jobId}] Files in project directory:`, filesInProject);
+
+// Verify that the APK file exists before attempting to copy.
+if (!fs.existsSync(apkFilePath)) {
+  throw new Error(`APK file not found at expected location: ${apkFilePath}`);
+}
+console.log(`[Job ${job.jobId}] Found APK file at ${apkFilePath}.`);
+
+// Verify that the AAB file exists before attempting to copy.
+if (!fs.existsSync(aabFilePath)) {
+  throw new Error(`AAB file not found at expected location: ${aabFilePath}`);
+}
+console.log(`[Job ${job.jobId}] Found AAB file at ${aabFilePath}.`);
+
+// Copy the APK file.
+console.log(`[Job ${job.jobId}] Copying APK from ${apkFilePath} to ${outputApkPath}...`);
+fs.copyFileSync(apkFilePath, outputApkPath);
+console.log(`[Job ${job.jobId}] APK copied successfully.`);
+
+// Copy the AAB file.
+console.log(`[Job ${job.jobId}] Copying AAB from ${aabFilePath} to ${outputAabPath}...`);
+fs.copyFileSync(aabFilePath, outputAabPath);
+console.log(`[Job ${job.jobId}] AAB copied successfully.`);
+
+// Clean up temporary files.
+console.log(`[Job ${job.jobId}] Cleaning up temporary files in ${projectDir}...`);
+await cleanupOldFiles(projectDir);
 
   console.log(`[Job ${job.jobId}] Conversion job completed successfully.`);
   return {
