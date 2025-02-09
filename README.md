@@ -1,4 +1,4 @@
-```markdown
+
 # PWA to APK/AAB Converter
 
 Convert Progressive Web Apps (PWAs) into Android APK and AAB files using Bubblewrap CLI and a REST API.
@@ -463,4 +463,3 @@ Feel free to submit pull requests or open issues on [GitHub](https://github.com/
 MIT License
 ```
 
----
