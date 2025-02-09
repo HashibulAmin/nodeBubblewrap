@@ -17,8 +17,18 @@ const execPromise = util.promisify(exec);
 const config = require('./config/config');
 const { cleanupOldFiles } = require('./utils/cleanup');
 
-// Import the necessary classes from @bubblewrap/core.
-const { TwaManifest, TwaGenerator, GradleWrapper, AndroidSdkTools, JdkHelper, Config } = require('@bubblewrap/core');
+// Import the necessary classes from @bubblewrap/core, including signing tools.
+const { 
+  TwaManifest, 
+  TwaGenerator, 
+  GradleWrapper, 
+  AndroidSdkTools, 
+  JdkHelper, 
+  Config, 
+  JarSigner, 
+  KeyTool, 
+  ConsoleLog 
+} = require('@bubblewrap/core');
 
 const app = express();
 
@@ -96,7 +106,7 @@ function updateJob(jobId, status, files, error) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JOB PROCESSING FUNCTION USING GradleWrapper from Bubblewrap Core
+// JOB PROCESSING FUNCTION
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function processConversionJob(job) {
@@ -111,73 +121,76 @@ async function processConversionJob(job) {
     fs.mkdirSync(tempFolder, { recursive: true });
     console.log(`[Job ${job.jobId}] Created temp folder at ${tempFolder}.`);
   }
-  
-  // Compute the project directory.
-  const projectDir = path.join(tempFolder, `pwa_${timestamp}_${urlHash}`);
-  console.log(`[Job ${job.jobId}] Project directory: ${projectDir}.`);
-  
-  // Cleanup might delete the directory; ensure it exists.
-  await cleanupOldFiles(projectDir);
-  if (!fs.existsSync(projectDir)) {
-    fs.mkdirSync(projectDir, { recursive: true });
-    console.log(`[Job ${job.jobId}] Re-created project directory at ${projectDir} after cleanup.`);
+
+  // Use the existing project directory if available; otherwise, create a new one.
+  let projectDir;
+  if (job.projectDir && fs.existsSync(job.projectDir)) {
+    projectDir = job.projectDir;
+    console.log(`[Job ${job.jobId}] Using existing project directory: ${projectDir}`);
+  } else {
+    projectDir = path.join(tempFolder, `pwa_${timestamp}_${urlHash}`);
+    console.log(`[Job ${job.jobId}] Project directory: ${projectDir}`);
+    await cleanupOldFiles(projectDir);
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+      console.log(`[Job ${job.jobId}] Created project directory at ${projectDir}.`);
+    }
+
+    // Download the manifest.
+    console.log(`[Job ${job.jobId}] Downloading manifest from ${job.manifestUrl.toString()}...`);
+    const response = await fetch(job.manifestUrl.toString());
+    if (!response.ok) {
+      throw new Error(`Failed to fetch manifest: HTTP ${response.status}`);
+    }
+    const manifest = await response.json();
+    console.log(`[Job ${job.jobId}] Manifest downloaded.`);
+
+    // Save the manifest to a file.
+    const manifestPath = path.join(projectDir, 'manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    console.log(`[Job ${job.jobId}] Manifest saved to ${manifestPath}.`);
+
+    // Create a TWA manifest using the downloaded manifest.
+    console.log(`[Job ${job.jobId}] Creating TWA manifest from downloaded manifest...`);
+    const twaManifest = TwaManifest.fromWebManifestJson(job.manifestUrl, manifest);
+    console.log(`[Job ${job.jobId}] TWA manifest created.`);
+
+    // Initialize the TWA generator and create the TWA project.
+    console.log(`[Job ${job.jobId}] Initializing TWA generator...`);
+    const generator = new TwaGenerator();
+    const logObj = { log: (msg) => console.log(msg) };
+    await generator.createTwaProject(projectDir, twaManifest, logObj);
+    console.log(`[Job ${job.jobId}] TWA project created.`);
+
+    // Write the TWA manifest file to the project directory.
+    const twaManifestPath = path.join(projectDir, 'twa-manifest.json');
+    fs.writeFileSync(twaManifestPath, JSON.stringify(twaManifest.toJson(), null, 2));
+    console.log(`[Job ${job.jobId}] TWA manifest saved to ${twaManifestPath}.`);
   }
 
-  // Download the manifest from manifestUrl.
-  console.log(`[Job ${job.jobId}] Downloading manifest from ${job.manifestUrl.toString()}...`);
-  const response = await fetch(job.manifestUrl.toString());
-  if (!response.ok) {
-    throw new Error(`Failed to fetch manifest: HTTP ${response.status}`);
-  }
-  const manifest = await response.json();
-  console.log(`[Job ${job.jobId}] Manifest downloaded.`);
+  // ──────────────────────────────────────────────────────────────
+  // Build the project using Gradle.
+  // ──────────────────────────────────────────────────────────────
 
-  // Save the manifest to a file.
-  const manifestPath = path.join(projectDir, 'manifest.json');
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  console.log(`[Job ${job.jobId}] Manifest saved to ${manifestPath}.`);
-
-  // Create a TWA manifest using the downloaded manifest.
-  console.log(`[Job ${job.jobId}] Creating TWA manifest from downloaded manifest...`);
-  const twaManifest = TwaManifest.fromWebManifestJson(job.manifestUrl, manifest);
-  console.log(`[Job ${job.jobId}] TWA manifest created.`);
-
-  // Initialize the TWA generator and create the TWA project.
-  console.log(`[Job ${job.jobId}] Initializing TWA generator...`);
-  const generator = new TwaGenerator();
-  const log = { log: (msg) => console.log(msg) };
-  await generator.createTwaProject(projectDir, twaManifest, log);
-  console.log(`[Job ${job.jobId}] TWA project created.`);
-
-  // Write the TWA manifest file (twa-manifest.json) to the project directory.
-  const twaManifestPath = path.join(projectDir, 'twa-manifest.json');
-  fs.writeFileSync(twaManifestPath, JSON.stringify(twaManifest.toJson(), null, 2));
-  console.log(`[Job ${job.jobId}] TWA manifest saved to ${twaManifestPath}.`);
-
-  // Ensure process.env.JAVA_HOME is set. Use config.jdkPath as fallback.
   if (!process.env.JDK_HOME) {
-    process.env.JDK_HOME = config.jdkPath;  // For example, '/Library/Java/JavaVirtualMachines/zulu-17.jdk'
+    process.env.JDK_HOME = config.jdkPath;  // e.g., '/Library/Java/JavaVirtualMachines/zulu-17.jdk'
     console.log(`[Job ${job.jobId}] Set process.env.JDK_HOME to ${process.env.JDK_HOME}`);
   }
   
-  // Create a Config instance using the Config class from @bubblewrap/core.
   const configInstance = new Config(
     process.env.JDK_HOME,
     process.env.ANDROID_HOME || config.androidHome
   );
   
-  // Initialize JdkHelper with the process object and the config instance.
-  console.log(configInstance);
-
-  // Initialize JdkHelper, AndroidSdkTools, and GradleWrapper.
   console.log(`[Job ${job.jobId}] Initializing JdkHelper...`);
   const jdkHelper = new JdkHelper(process, configInstance);
   console.log(`[Job ${job.jobId}] Creating AndroidSdkTools...`);
-  const androidSdkTools = await AndroidSdkTools.create(process, configInstance, jdkHelper, log);
+  const logObj = { log: (msg) => console.log(msg) };
+  const androidSdkTools = await AndroidSdkTools.create(process, configInstance, jdkHelper, logObj);
   console.log(`[Job ${job.jobId}] Initializing GradleWrapper...`);
   const gradle = new GradleWrapper(process, androidSdkTools, projectDir);
   
-  // Execute Gradle tasks.
+  // Run Gradle build tasks.
   console.log(`[Job ${job.jobId}] Executing Gradle task 'assembleRelease' for APK...`);
   await gradle.assembleRelease();
   console.log(`[Job ${job.jobId}] APK build completed.`);
@@ -186,49 +199,106 @@ async function processConversionJob(job) {
   await gradle.bundleRelease();
   console.log(`[Job ${job.jobId}] AAB build completed.`);
 
-// Define the output directory (ensure it exists)
-const outputDir = path.join(__dirname, '..', config.outputDir);
-if (!fs.existsSync(outputDir)) {
-  fs.mkdirSync(outputDir, { recursive: true });
-  console.log(`[Job ${job.jobId}] Created output directory at ${outputDir}.`);
-}
+  // ──────────────────────────────────────────────────────────────
+  // SIGNING THE BUILD ARTIFACTS
+  // ──────────────────────────────────────────────────────────────
 
-// Define the expected file paths for the APK and AAB.
-// These are the file names as assumed by your current configuration.
-const apkFilePath = path.join(projectDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk');
-const aabFilePath = path.join(projectDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab');
-const outputApkPath = path.join(outputDir, `${urlHash}_${timestamp}.apk`);
-const outputAabPath = path.join(outputDir, `${urlHash}_${timestamp}.aab`);
+  // Extract the domain name from the job URL (used as the key alias).
+  const urlObj = new URL(job.url);
+  const domain = urlObj.hostname;
+  console.log(`[Job ${job.jobId}] Extracted domain: ${domain}`);
 
-// List files in the project directory to help diagnose if the files exist.
-const filesInProject = fs.readdirSync(projectDir);
-console.log(`[Job ${job.jobId}] Files in project directory:`, filesInProject);
+  // Prepare a directory to hold generated keystores inside projectDir.
+  const keystoreDir = path.join(projectDir, 'keystores');
+  if (!fs.existsSync(keystoreDir)) {
+    fs.mkdirSync(keystoreDir, { recursive: true });
+    console.log(`[Job ${job.jobId}] Created keystore directory at ${keystoreDir}.`);
+  }
+  const keystorePath = path.join(keystoreDir, `${domain}.jks`);
 
-// Verify that the APK file exists before attempting to copy.
-if (!fs.existsSync(apkFilePath)) {
-  throw new Error(`APK file not found at expected location: ${apkFilePath}`);
-}
-console.log(`[Job ${job.jobId}] Found APK file at ${apkFilePath}.`);
+  // Generate a password: domain + random string.
+  const randomPart = Math.random().toString(36).substring(2, 8);
+  const generatedPassword = domain + randomPart;
+  console.log(`[Job ${job.jobId}] Generated signing key password: ${generatedPassword}`);
 
-// Verify that the AAB file exists before attempting to copy.
-if (!fs.existsSync(aabFilePath)) {
-  throw new Error(`AAB file not found at expected location: ${aabFilePath}`);
-}
-console.log(`[Job ${job.jobId}] Found AAB file at ${aabFilePath}.`);
+  // Create a new signing key using KeyTool.
+  const keyTool = new KeyTool(jdkHelper, new ConsoleLog('keytool'));
+  const keyOptions = {
+    path: keystorePath,
+    alias: domain,
+    password: generatedPassword,
+    keypassword: generatedPassword,
+    fullName: domain,
+    organizationalUnit: "Development",
+    organization: "DefaultOrg",
+    country: "US"
+  };
+  console.log(`[Job ${job.jobId}] Creating signing key for ${domain}...`);
+  await keyTool.createSigningKey(keyOptions, true);
+  console.log(`[Job ${job.jobId}] Signing key created successfully.`);
 
-// Copy the APK file.
-console.log(`[Job ${job.jobId}] Copying APK from ${apkFilePath} to ${outputApkPath}...`);
-fs.copyFileSync(apkFilePath, outputApkPath);
-console.log(`[Job ${job.jobId}] APK copied successfully.`);
+  // Create a JarSigner instance.
+  const jarSigner = new JarSigner(jdkHelper);
 
-// Copy the AAB file.
-console.log(`[Job ${job.jobId}] Copying AAB from ${aabFilePath} to ${outputAabPath}...`);
-fs.copyFileSync(aabFilePath, outputAabPath);
-console.log(`[Job ${job.jobId}] AAB copied successfully.`);
+  // Sign the APK.
+  const unsignedApkPath = path.join(projectDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk');
+  if (!fs.existsSync(unsignedApkPath)) {
+    throw new Error(`Unsigned APK file not found at expected location: ${unsignedApkPath}`);
+  }
+  console.log(`[Job ${job.jobId}] Found unsigned APK file at ${unsignedApkPath}.`);
 
-// Clean up temporary files.
-console.log(`[Job ${job.jobId}] Cleaning up temporary files in ${projectDir}...`);
-await cleanupOldFiles(projectDir);
+  const signedApkPathTemp = path.join(projectDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-signed.apk');
+  console.log(`[Job ${job.jobId}] Signing APK using JarSigner...`);
+  await jarSigner.sign(
+    { path: keystorePath, alias: domain },
+    generatedPassword,
+    generatedPassword,
+    unsignedApkPath,
+    signedApkPathTemp
+  );
+  console.log(`[Job ${job.jobId}] APK signed successfully. Signed APK located at ${signedApkPathTemp}.`);
+
+  // Sign the AAB.
+  const unsignedAabPath = path.join(projectDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab');
+  if (!fs.existsSync(unsignedAabPath)) {
+    throw new Error(`Unsigned AAB file not found at expected location: ${unsignedAabPath}`);
+  }
+  console.log(`[Job ${job.jobId}] Found unsigned AAB file at ${unsignedAabPath}.`);
+
+  const signedAabPathTemp = path.join(projectDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release-signed.aab');
+  console.log(`[Job ${job.jobId}] Signing AAB using JarSigner...`);
+  await jarSigner.sign(
+    { path: keystorePath, alias: domain },
+    generatedPassword,
+    generatedPassword,
+    unsignedAabPath,
+    signedAabPathTemp
+  );
+  console.log(`[Job ${job.jobId}] AAB signed successfully. Signed AAB located at ${signedAabPathTemp}.`);
+
+  // ──────────────────────────────────────────────────────────────
+  // COPY OUTPUT FILES
+  // ──────────────────────────────────────────────────────────────
+
+  const outputDir = path.join(__dirname, '..', config.outputDir);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+    console.log(`[Job ${job.jobId}] Created output directory at ${outputDir}.`);
+  }
+  const outputApkPath = path.join(outputDir, `${urlHash}_${timestamp}.apk`);
+  const outputAabPath = path.join(outputDir, `${urlHash}_${timestamp}.aab`);
+
+  console.log(`[Job ${job.jobId}] Copying signed APK from ${signedApkPathTemp} to ${outputApkPath}...`);
+  fs.copyFileSync(signedApkPathTemp, outputApkPath);
+  console.log(`[Job ${job.jobId}] Signed APK copied successfully.`);
+
+  console.log(`[Job ${job.jobId}] Copying signed AAB from ${signedAabPathTemp} to ${outputAabPath}...`);
+  fs.copyFileSync(signedAabPathTemp, outputAabPath);
+  console.log(`[Job ${job.jobId}] Signed AAB copied successfully.`);
+
+  // Clean up temporary files.
+  console.log(`[Job ${job.jobId}] Cleaning up temporary files in ${projectDir}...`);
+  await cleanupOldFiles(projectDir);
 
   console.log(`[Job ${job.jobId}] Conversion job completed successfully.`);
   return {
@@ -299,10 +369,13 @@ app.post('/convert', async (req, res) => {
       error: null,
     };
     insertJob(jobId, 'pending', created);
+    // Optionally, if you already have a project for the given URL and manifest, 
+    // you can include a "projectDir" property in the job object.
     jobQueue.push({
       jobId,
       url,
       manifestUrl: manifestURLObject,
+      // projectDir: "path/to/existing/project"  // Uncomment and set if available.
     });
     processQueue();
     res.json({ success: true, jobId });
