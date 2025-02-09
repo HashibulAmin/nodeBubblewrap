@@ -14,6 +14,8 @@ npm start
 
 ## API Endpoint
 - `POST /convert` - Upload a manifest.json file with URL for conversion.
+- `GET /job/:jobID` - Get a job details with ID.
+- `GET /download/:fileName` - Get a apk/abb file with name from job files list.
 
 
 # PWA to APK/AAB Converter
