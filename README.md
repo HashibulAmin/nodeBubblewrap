@@ -1,57 +1,26 @@
-# PWA to APK Converter
+```markdown
+# PWA to APK/AAB Converter
 
-Convert Progressive Web Apps (PWAs) into APK/AAB files using a REST API with Bubblewrap.
+Convert Progressive Web Apps (PWAs) into Android APK and AAB files using Bubblewrap CLI and a REST API.
 
 ## Installation
+
+Install dependencies:
 ```bash
 npm install
 ```
 
-## Start Development Server
+## Environment Setup
+
+### 1. Node.js and npm
+
+Ensure you have Node.js (>= 14) and npm (>= 6) installed:
+
 ```bash
-npm run dev
-```
-
-## Start Server
-```bash
-npm start
-```
-
-## API Endpoint
-- `POST /convert` - Upload a manifest.json file with URL for conversion.
-- `GET /job/:jobID` - Get a job details with ID.
-- `GET /download/:fileName` - Get a apk/abb file with name from job files list.
-
-
-# PWA to APK/AAB Converter
-
-Convert Progressive Web Apps (PWAs) to Android APK and AAB files using Bubblewrap CLI. This service provides a REST API to convert your PWA into Android applications with automatic icon generation.
-
-## Prerequisites
-
-- Node.js >= 14
-- npm >= 6
-- Android SDK
-- Java Development Kit (JDK)
-- Bubblewrap CLI
-- PM2 (for production deployment)
-
-## Server Deployment Guide
-
-### 1. Set up Server Prerequisites
-
-First, update your package manager and install essential build tools:
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential
-```
-
-Install Node.js and npm:
-```bash
-# Add NodeSource repository
+# Add NodeSource repository for Node.js 14.x
 curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -
 
-# Install Node.js
+# Install Node.js and npm
 sudo apt-get install -y nodejs
 
 # Verify installation
@@ -59,141 +28,357 @@ node --version
 npm --version
 ```
 
-### 2. Install Java Development Kit (JDK):
-```bash
-# Install default JDK
-sudo apt-get install -y default-jdk
+### 2. Java Development Kit (JDK)
 
-# Verify installation
+Install a Java Development Kit (JDK). For example, on Ubuntu/Debian:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y default-jdk
+```
+
+Set the `JAVA_HOME` environment variable. Add the following lines to your shell configuration file (e.g., `~/.bashrc` or `~/.profile`):
+
+```bash
+export JAVA_HOME=$(readlink -f /usr/bin/java | sed "s:bin/java::")
+export PATH=$PATH:$JAVA_HOME/bin
+```
+
+Reload your shell:
+
+```bash
+source ~/.bashrc
+```
+
+Verify the installation:
+
+```bash
 java -version
 javac -version
 ```
 
-### 3. Install Android SDK
+### 3. Android SDK
+
+Install the Android SDK (if not already installed):
 
 ```bash
-# Install Android SDK
 sudo apt-get install -y android-sdk
+```
 
-# Set up ANDROID_HOME environment variable
-echo "export ANDROID_HOME=/usr/lib/android-sdk" >> ~/.bashrc
-echo "export PATH=\$PATH:\$ANDROID_HOME/tools:\$ANDROID_HOME/platform-tools" >> ~/.bashrc
+Set the `ANDROID_HOME` environment variable and update your PATH. Add these lines to your shell configuration file:
+
+```bash
+export ANDROID_HOME=/usr/lib/android-sdk
+export PATH=$PATH:$ANDROID_HOME/tools:$ANDROID_HOME/platform-tools
+```
+
+Reload your shell:
+
+```bash
 source ~/.bashrc
 ```
 
-### 4. Install Bubblewrap CLI
+### 4. Android NDK
+
+The Android NDK is required for native code support. You have two options:
+
+#### Option 1: Install via Package Manager
 
 ```bash
-# Install Bubblewrap globally
+sudo apt-get install -y android-ndk
+```
+
+#### Option 2: Download Manually
+
+1. Visit the [Android NDK Downloads](https://developer.android.com/ndk/downloads) page.
+2. Download the latest NDK archive for your system.
+3. Extract the archive to a directory (e.g., `/opt/android-ndk`).
+
+Then set the `ANDROID_NDK` environment variable and update your PATH by adding these lines to your shell configuration file:
+
+```bash
+export ANDROID_NDK=/opt/android-ndk
+export PATH=$PATH:$ANDROID_NDK
+```
+
+Reload your shell:
+
+```bash
+source ~/.bashrc
+```
+
+### 5. Bubblewrap CLI
+
+Install Bubblewrap CLI globally:
+
+```bash
 sudo npm install -g @bubblewrap/cli
+```
 
-# Verify installation
+Verify installation:
+
+```bash
 bubblewrap --version
+```
 
-# Initialize Bubblewrap (first-time setup)
+Initialize Bubblewrap (if running for the first time):
+
+```bash
 bubblewrap doctor
-
-# If prompted, install additional Android SDK components:
 bubblewrap update
 ```
 
-# Update core/src/lib/jdk/JdkHelper.ts
+### 6. PM2 (for Production Deployment)
+
+Install PM2 globally to manage the application in production:
+
 ```bash
-static getJavaHome(jdkPath, process) {
-        const joinPath = (process.platform === 'win32') ? path.win32.join : path.posix.join;
-        if (process.platform === 'darwin') {
-          // If jdkPath already ends with '/Contents/Home' (with or without a trailing slash), return as is.
-          if (jdkPath.endsWith('/Contents/Home') || jdkPath.endsWith('/Contents/Home/')) {
-            return jdkPath;
-          }
-          return joinPath(jdkPath, '/Contents/Home/');
-        } else if (process.platform === 'linux' || process.platform === 'win32') {
-          return joinPath(jdkPath, '/');
-        }
-        throw new Error(`Unsupported Platform: ${process.platform}`);
-     }
+sudo npm install -g pm2
 ```
 
-Common Bubblewrap requirements:
-- Android SDK Build-Tools
-- Android SDK Command-line Tools
-- Android SDK Platform-Tools
-- Android Platform API level 30
-
-### 5. Install PM2
+Verify installation:
 
 ```bash
-# Install PM2 globally
-sudo npm install -g pm2
-
-# Verify installation
 pm2 --version
 ```
 
-### 6. Clone and Set Up Project
+## Project Setup
+
+### 1. Clone and Configure Project
+
+Clone the repository from GitHub:
 
 ```bash
-# Clone repository
 git clone https://github.com/HashibulAmin/nodeBubblewrap.git
 cd nodeBubblewrap
+```
 
-# Install dependencies
+Install the project dependencies:
+
+```bash
 npm install
+```
 
-# Copy environment file
+### 2. Configure the Project
+
+Copy the example environment file and update it with your settings:
+
+```bash
 cp .env.example .env
-
-# Edit environment variables
 nano .env
 ```
 
-### 7. Configure Project
+Example `.env` file:
 
-Edit your `.env` file with appropriate values:
 ```env
 PORT=3000
 NODE_ENV=production
 UPLOAD_DIR=uploads
 OUTPUT_DIR=output
 ANDROID_HOME=/usr/lib/android-sdk
+ANDROID_NDK=/opt/android-ndk
+JAVA_HOME=/path/to/your/jdk
 MAX_FILE_SIZE=10mb
 ```
 
-### 8. Set Up Directory Structure
+Set up required directories:
 
 ```bash
-# Create required directories
 mkdir -p uploads output logs
 chmod 755 uploads output logs
 ```
 
-### 9. Start Application with PM2
+## Running the Application
+
+### Start Development Server
+
+For development, run:
 
 ```bash
-# Start the application
-pm2 start ecosystem.config.js --env production
-
-# Save PM2 process list
-pm2 save
-
-# Set up PM2 to start on system boot
-pm2 startup
-
-# Monitor the application
-pm2 monit
+npm run dev
 ```
 
-### 10. Configure Nginx (Optional but recommended)
+### Start Production Server
+
+To start the server normally:
 
 ```bash
-# Install Nginx
-sudo apt-get install -y nginx
+npm start
+```
 
-# Create Nginx configuration
+### Start with PM2
+
+To run in production using PM2:
+
+```bash
+pm2 start ecosystem.config.js --env production
+pm2 save
+pm2 startup
+```
+
+## API Documentation
+
+The REST API provides endpoints to convert a PWA into APK and AAB files using Bubblewrap.
+
+### Endpoints
+
+- **POST `/convert`**
+
+  **Description:**  
+  Converts a PWA to APK/AAB files. Accepts a JSON payload containing a `url` and a `manifestUrl` (and optionally an existing `projectDir`).
+
+  **Request Payload:**
+  ```json
+  {
+    "url": "https://example.com",
+    "manifestUrl": "https://example.com/manifest.json"
+  }
+  ```
+
+  **Response:**
+  ```json
+  {
+    "success": true,
+    "jobId": "a-unique-job-id"
+  }
+  ```
+
+  **Notes:**  
+  - If an existing project directory is provided (via `projectDir`), the service will reuse it and skip manifest download and project regeneration.
+  - The service automatically generates or reuses a signing key (stored in a root-level keystores folder) based on the domain name. If a keystore for the domain already exists, its key options are retrieved from the database and reused.
+
+- **GET `/job/:jobId`**
+
+  **Description:**  
+  Retrieves the status and details of a conversion job by job ID.
+
+  **Response:**
+  ```json
+  {
+    "jobId": "a-unique-job-id",
+    "status": "completed",
+    "created": 1623456789012,
+    "updated": 1623456790123,
+    "files": {
+      "apk": "base64hash_timestamp.apk",
+      "aab": "base64hash_timestamp.aab"
+    }
+  }
+  ```
+
+- **GET `/download/:filename`**
+
+  **Description:**  
+  Downloads the generated APK or AAB file using the filename from the job files list.
+
+  **Response:**  
+  Returns the file as a download.
+
+## Example manifest.json
+
+Below is an example of a `manifest.json` file that you can use for testing. Save this content as `manifest.json` in your PWA project:
+
+```json
+{
+  "plugin": "PWA to TWA",
+  "id": "https://bajhi.com?app_id=be064000fba6fcf4f4442c8ec90885ab",
+  "name": "bajhi",
+  "short_name": "bajhi",
+  "description": "Build Websites in Minutes",
+  "theme_color": "#1858d1",
+  "background_color": "#1d2327",
+  "orientation": "portrait",
+  "display": "standalone",
+  "scope": "/",
+  "start_url": "/?utm_source=manifest.json&utm_medium=plugin&utm_campaign=iworks-pwa",
+  "icons": [
+    {
+      "sizes": "512x512",
+      "type": "image/png",
+      "src": "https://bajhi.com/wp-content/uploads/2024/11/bajhi-logo-1-1-1.png",
+      "purpose": "maskable"
+    },
+    {
+      "sizes": "36x36",
+      "type": "image/png",
+      "density": "0.75",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-36.png?v=233183"
+    },
+    {
+      "sizes": "48x48",
+      "type": "image/png",
+      "density": "1.0",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-48.png?v=233183"
+    },
+    {
+      "sizes": "72x72",
+      "type": "image/png",
+      "density": "1.5",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-72.png?v=233183"
+    },
+    {
+      "sizes": "96x96",
+      "type": "image/png",
+      "density": "2.0",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-96.png?v=233183"
+    },
+    {
+      "sizes": "144x144",
+      "type": "image/png",
+      "density": "3.0",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-144.png?v=233183"
+    },
+    {
+      "sizes": "192x192",
+      "type": "image/png",
+      "density": "4.0",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-192.png?v=233183",
+      "purpose": "any"
+    },
+    {
+      "sizes": "512x512",
+      "type": "image/png",
+      "src": "https://bajhi.com/wp-content/uploads/pwa/icon-pwa-512.png?v=233183",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": [
+    "education",
+    "productivity",
+    "shopping"
+  ],
+  "shortcuts": [
+    {
+      "name": "Websites",
+      "url": "/websites/?utm_source=manifest.json&utm_medium=application&utm_campaign=iworks-pwa"
+    },
+    {
+      "name": "Apps",
+      "url": "/apps/?utm_source=manifest.json&utm_medium=application&utm_campaign=iworks-pwa"
+    },
+    {
+      "name": "Services",
+      "url": "/services/?utm_source=manifest.json&utm_medium=application&utm_campaign=iworks-pwa"
+    },
+    {
+      "name": "Freelancers & Agencies",
+      "url": "/freelancers/?utm_source=manifest.json&utm_medium=application&utm_campaign=iworks-pwa"
+    }
+  ]
+}
+```
+
+## (Optional) Configure Nginx as a Reverse Proxy
+
+Install and configure Nginx:
+
+```bash
+sudo apt-get install -y nginx
 sudo nano /etc/nginx/sites-available/pwa-converter
 ```
 
-Add the following configuration:
+Insert the following configuration (adjust `your-domain.com` accordingly):
+
 ```nginx
 server {
     listen 80;
@@ -212,26 +397,14 @@ server {
 ```
 
 Enable the configuration:
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/pwa-converter /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
 ```
 
-## Development
-
-Start the development server:
-```bash
-npm run dev
-```
-
-## API Documentation
-
-[Previous API documentation section remains the same...]
-
-## Project Structure
-
-[Previous project structure section remains the same...]
+---
 
 ## Maintenance Commands
 
@@ -251,44 +424,43 @@ pm2 stop pwa-converter
 # View application status
 pm2 status
 
-# Update PM2 startup script
-pm2 startup
-
 # Save current PM2 process list
 pm2 save
 ```
 
+---
+
 ## Troubleshooting
 
-1. If Bubblewrap fails to initialize:
-```bash
-# Check Android SDK installation
-bubblewrap doctor
+1. **Bubblewrap Initialization Issues:**
+   ```bash
+   bubblewrap doctor
+   npm install -g @bubblewrap/cli@latest
+   ```
 
-# Update Bubblewrap
-npm install -g @bubblewrap/cli@latest
-```
+2. **PM2 Issues:**
+   ```bash
+   pm2 logs
+   pm2 flush
+   ```
 
-2. If PM2 fails to start:
-```bash
-# Check logs
-pm2 logs
+3. **Permission Issues:**
+   ```bash
+   sudo chown -R $USER:$USER uploads output logs
+   chmod 755 uploads output logs
+   ```
 
-# Clear PM2 logs
-pm2 flush
-```
-
-3. Permission issues:
-```bash
-# Fix directory permissions
-sudo chown -R $USER:$USER uploads output logs
-chmod 755 uploads output logs
-```
+---
 
 ## Contributing
 
-[Previous contributing section remains the same...]
+Feel free to submit pull requests or open issues on [GitHub](https://github.com/HashibulAmin/nodeBubblewrap).
+
+---
 
 ## License
 
 MIT License
+```
+
+---
