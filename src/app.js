@@ -6,19 +6,19 @@ const sqlite3 = require('sqlite3').verbose();
 const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const { exec } = require('child_process');
 const util = require('util');
+const exec = require('child_process').exec;
 const execPromise = util.promisify(exec);
 
-// For Node 18+, fetch is available globally. If not, uncomment the following line:
+// For Node 18+, the global fetch API is available.
+// Otherwise, uncomment the following line after installing node-fetch:
 // const fetch = require('node-fetch');
 
 const config = require('./config/config');
 const { cleanupOldFiles } = require('./utils/cleanup');
 
 // Import the necessary classes from @bubblewrap/core.
-// We assume that TwaManifest exposes fromWebManifestJson.
-const { TwaManifest, TwaGenerator } = require('@bubblewrap/core');
+const { TwaManifest, TwaGenerator, GradleWrapper, AndroidSdkTools, JdkHelper, Config } = require('@bubblewrap/core');
 
 const app = express();
 
@@ -34,6 +34,8 @@ const limiter = rateLimit({
   message: "Too many requests from this IP, please try again later."
 });
 app.use(limiter);
+
+// Use express.json() to parse JSON bodies.
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ function updateJob(jobId, status, files, error) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JOB PROCESSING FUNCTION USING Bubblewrap CLI for Build
+// JOB PROCESSING FUNCTION USING GradleWrapper from Bubblewrap Core
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function processConversionJob(job) {
@@ -103,19 +105,26 @@ async function processConversionJob(job) {
 
   console.log(`[Job ${job.jobId}] Starting conversion job at timestamp ${timestamp}.`);
 
-  // Create a dedicated "temp" folder if it doesn't exist.
+  // Ensure a dedicated "temp" folder exists.
   const tempFolder = path.join(__dirname, '..', 'temp');
   if (!fs.existsSync(tempFolder)) {
     fs.mkdirSync(tempFolder, { recursive: true });
     console.log(`[Job ${job.jobId}] Created temp folder at ${tempFolder}.`);
   }
+  
+  // Compute the project directory.
   const projectDir = path.join(tempFolder, `pwa_${timestamp}_${urlHash}`);
   console.log(`[Job ${job.jobId}] Project directory: ${projectDir}.`);
+  
+  // Cleanup might delete the directory; ensure it exists.
   await cleanupOldFiles(projectDir);
-  console.log(`[Job ${job.jobId}] Cleaned up project directory.`);
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true });
+    console.log(`[Job ${job.jobId}] Re-created project directory at ${projectDir} after cleanup.`);
+  }
 
   // Download the manifest from manifestUrl.
-  console.log(`[Job ${job.jobId}] Downloading manifest from URL: ${job.manifestUrl.toString()}...`);
+  console.log(`[Job ${job.jobId}] Downloading manifest from ${job.manifestUrl.toString()}...`);
   const response = await fetch(job.manifestUrl.toString());
   if (!response.ok) {
     throw new Error(`Failed to fetch manifest: HTTP ${response.status}`);
@@ -123,12 +132,12 @@ async function processConversionJob(job) {
   const manifest = await response.json();
   console.log(`[Job ${job.jobId}] Manifest downloaded.`);
 
-  // Save the manifest to a file (manifest.json).
+  // Save the manifest to a file.
   const manifestPath = path.join(projectDir, 'manifest.json');
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   console.log(`[Job ${job.jobId}] Manifest saved to ${manifestPath}.`);
 
-  // Create a TWA manifest from the downloaded manifest.
+  // Create a TWA manifest using the downloaded manifest.
   console.log(`[Job ${job.jobId}] Creating TWA manifest from downloaded manifest...`);
   const twaManifest = TwaManifest.fromWebManifestJson(job.manifestUrl, manifest);
   console.log(`[Job ${job.jobId}] TWA manifest created.`);
@@ -140,26 +149,47 @@ async function processConversionJob(job) {
   await generator.createTwaProject(projectDir, twaManifest, log);
   console.log(`[Job ${job.jobId}] TWA project created.`);
 
-  // Build the project using the Bubblewrap CLI.
-  console.log(`[Job ${job.jobId}] Building APK using bubblewrap build...`);
-  await execPromise(`bubblewrap build --directory ${projectDir} --yes`);
-  console.log(`[Job ${job.jobId}] APK build completed.`);
+  // Ensure process.env.JAVA_HOME is set. Use config.jdkPath as fallback.
+  if (!process.env.JAVA_HOME) {
+    process.env.JAVA_HOME = config.jdkPath;
+    console.log(`[Job ${job.jobId}] Set process.env.JAVA_HOME to ${process.env.JAVA_HOME}`);
+  }
 
-  console.log(`[Job ${job.jobId}] Building AAB using bubblewrap build --android-app-bundle...`);
-  await execPromise(`bubblewrap build --android-app-bundle --directory ${projectDir} --yes`);
+  // Create a Config instance using the Config class.
+  // This instance will be passed to AndroidSdkTools.create.
+  const configInstance = new Config(
+    process.env.JAVA_HOME || config.jdkPath,
+    process.env.ANDROID_HOME || config.androidSdkPath
+  );
+
+  // Initialize JdkHelper, AndroidSdkTools, and GradleWrapper.
+  console.log(`[Job ${job.jobId}] Initializing JdkHelper...`);
+  const jdkHelper = new JdkHelper(process);
+  console.log(`[Job ${job.jobId}] Creating AndroidSdkTools...`);
+  const androidSdkTools = await AndroidSdkTools.create(process, configInstance, jdkHelper, log);
+  console.log(`[Job ${job.jobId}] Initializing GradleWrapper...`);
+  const gradle = new GradleWrapper(process, androidSdkTools, projectDir);
+  
+  // Execute Gradle tasks.
+  console.log(`[Job ${job.jobId}] Executing Gradle task 'assembleRelease' for APK...`);
+  await gradle.assembleRelease();
+  console.log(`[Job ${job.jobId}] APK build completed.`);
+  
+  console.log(`[Job ${job.jobId}] Executing Gradle task 'bundleRelease' for AAB...`);
+  await gradle.bundleRelease();
   console.log(`[Job ${job.jobId}] AAB build completed.`);
 
-  // Define output paths and copy the generated files.
+  // Define paths for the generated files.
   const outputDir = path.join(__dirname, '..', config.outputDir);
-  const apkPath = path.join(projectDir, 'app-release-signed.apk');
-  const aabPath = path.join(projectDir, 'app-release-bundle.aab');
+  const apkFilePath = path.join(projectDir, 'app-release-signed.apk');
+  const aabFilePath = path.join(projectDir, 'app-release-bundle.aab');
   const outputApkPath = path.join(outputDir, `${urlHash}_${timestamp}.apk`);
   const outputAabPath = path.join(outputDir, `${urlHash}_${timestamp}.aab`);
 
-  console.log(`[Job ${job.jobId}] Copying APK from ${apkPath} to ${outputApkPath}...`);
-  fs.copyFileSync(apkPath, outputApkPath);
-  console.log(`[Job ${job.jobId}] Copying AAB from ${aabPath} to ${outputAabPath}...`);
-  fs.copyFileSync(aabPath, outputAabPath);
+  console.log(`[Job ${job.jobId}] Copying APK from ${apkFilePath} to ${outputApkPath}...`);
+  fs.copyFileSync(apkFilePath, outputApkPath);
+  console.log(`[Job ${job.jobId}] Copying AAB from ${aabFilePath} to ${outputAabPath}...`);
+  fs.copyFileSync(aabFilePath, outputAabPath);
 
   // Clean up temporary files.
   console.log(`[Job ${job.jobId}] Cleaning up temporary files in ${projectDir}...`);
@@ -197,26 +227,24 @@ async function processQueue() {
 // API ENDPOINTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The /convert endpoint expects a JSON payload with "url" and "manifestUrl".
 app.post('/convert', async (req, res) => {
   try {
-    console.log(req.body);
-
+    console.log("Request body:", req.body);
     const { url, manifestUrl } = req.body;
     const missingParams = [];
-
-      if (typeof url !== 'string' || url.trim() === '') {
-        missingParams.push({ field: "url", expectedType: "string" });
-      }
-      if (typeof manifestUrl !== 'string' || manifestUrl.trim() === '') {
-        missingParams.push({ field: "manifestUrl", expectedType: "string" });
-      }
-
-      if (missingParams.length > 0) {
-        return res.status(400).json({
-          error: "Missing or invalid parameters",
-          details: missingParams
-        });
-      }
+    if (typeof url !== 'string' || url.trim() === '') {
+      missingParams.push({ field: "url", expectedType: "string" });
+    }
+    if (typeof manifestUrl !== 'string' || manifestUrl.trim() === '') {
+      missingParams.push({ field: "manifestUrl", expectedType: "string" });
+    }
+    if (missingParams.length > 0) {
+      return res.status(400).json({
+        error: "Missing or invalid parameters",
+        details: missingParams,
+      });
+    }
     // Validate URL format.
     try {
       new URL(url);
