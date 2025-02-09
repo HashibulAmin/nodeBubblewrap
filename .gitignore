@@ -4,5 +4,6 @@ uploads/
 output/
 temp/
 logs/
+keystores/
 *.log
 *.sqlite

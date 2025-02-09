@@ -6,9 +6,9 @@ const sqlite3 = require('sqlite3').verbose();
 const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const util = require('util');
-const exec = require('child_process').exec;
-const execPromise = util.promisify(exec);
+// const util = require('util');
+// const exec = require('child_process').exec;
+// const execPromise = util.promisify(exec);
 
 // For Node 18+, the global fetch API is available.
 // Otherwise, uncomment the following line after installing node-fetch:
@@ -58,6 +58,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
     console.error("Error opening SQLite database:", err);
   } else {
     console.log("Connected to SQLite database");
+
+    // Create jobs table if it does not exist.
     db.run(
       `CREATE TABLE IF NOT EXISTS jobs (
          jobId TEXT PRIMARY KEY,
@@ -70,6 +72,26 @@ const db = new sqlite3.Database(dbPath, (err) => {
       (err) => {
         if (err) {
           console.error("Error creating jobs table:", err);
+        }
+      }
+    );
+
+    // Create keystores table to store signing key options per domain.
+    db.run(
+      `CREATE TABLE IF NOT EXISTS keystores (
+         domain TEXT PRIMARY KEY,
+         jobId TEXT,
+         keystorePath TEXT,
+         password TEXT,
+         keypassword TEXT,
+         fullName TEXT,
+         organizationalUnit TEXT,
+         organization TEXT,
+         country TEXT
+       )`,
+      (err) => {
+        if (err) {
+          console.error("Error creating keystores table:", err);
         }
       }
     );
@@ -170,10 +192,8 @@ async function processConversionJob(job) {
 
   // ──────────────────────────────────────────────────────────────
   // Build the project using Gradle.
-  // ──────────────────────────────────────────────────────────────
-
   if (!process.env.JDK_HOME) {
-    process.env.JDK_HOME = config.jdkPath;  // e.g., '/Library/Java/JavaVirtualMachines/zulu-17.jdk'
+    process.env.JDK_HOME = config.jdkPath; // e.g., '/Library/Java/JavaVirtualMachines/zulu-17.jdk'
     console.log(`[Job ${job.jobId}] Set process.env.JDK_HOME to ${process.env.JDK_HOME}`);
   }
   
@@ -190,7 +210,6 @@ async function processConversionJob(job) {
   console.log(`[Job ${job.jobId}] Initializing GradleWrapper...`);
   const gradle = new GradleWrapper(process, androidSdkTools, projectDir);
   
-  // Run Gradle build tasks.
   console.log(`[Job ${job.jobId}] Executing Gradle task 'assembleRelease' for APK...`);
   await gradle.assembleRelease();
   console.log(`[Job ${job.jobId}] APK build completed.`);
@@ -208,34 +227,74 @@ async function processConversionJob(job) {
   const domain = urlObj.hostname;
   console.log(`[Job ${job.jobId}] Extracted domain: ${domain}`);
 
-  // Prepare a directory to hold generated keystores inside projectDir.
-  const keystoreDir = path.join(projectDir, 'keystores');
-  if (!fs.existsSync(keystoreDir)) {
-    fs.mkdirSync(keystoreDir, { recursive: true });
-    console.log(`[Job ${job.jobId}] Created keystore directory at ${keystoreDir}.`);
+  // Prepare a root keystores directory (outside any project directory).
+  const keystoreRootDir = path.join(__dirname, '..', 'keystores');
+  if (!fs.existsSync(keystoreRootDir)) {
+    fs.mkdirSync(keystoreRootDir, { recursive: true });
+    console.log(`[Job ${job.jobId}] Created root keystore directory at ${keystoreRootDir}.`);
   }
-  const keystorePath = path.join(keystoreDir, `${domain}.jks`);
+  const keystorePath = path.join(keystoreRootDir, `${domain}.jks`);
 
-  // Generate a password: domain + random string.
-  const randomPart = Math.random().toString(36).substring(2, 8);
-  const generatedPassword = domain + randomPart;
-  console.log(`[Job ${job.jobId}] Generated signing key password: ${generatedPassword}`);
+  // If the keystore file exists, try to retrieve its details from the keystores table.
+  let keyOptions = null;
+  if (fs.existsSync(keystorePath)) {
+    keyOptions = await new Promise((resolve, reject) => {
+      db.get("SELECT * FROM keystores WHERE domain = ?", [domain], (err, row) => {
+        if (err) {
+          reject(err);
+        } else if (row) {
+          resolve({
+            path: row.keystorePath,
+            alias: row.domain,
+            password: row.password,
+            keypassword: row.keypassword,
+            fullName: row.fullName,
+            organizationalUnit: row.organizationalUnit,
+            organization: row.organization,
+            country: row.country
+          });
+        } else {
+          resolve(null);
+        }
+      });
+    });
+  }
 
-  // Create a new signing key using KeyTool.
   const keyTool = new KeyTool(jdkHelper, new ConsoleLog('keytool'));
-  const keyOptions = {
-    path: keystorePath,
-    alias: domain,
-    password: generatedPassword,
-    keypassword: generatedPassword,
-    fullName: domain,
-    organizationalUnit: "Development",
-    organization: "DefaultOrg",
-    country: "US"
-  };
-  console.log(`[Job ${job.jobId}] Creating signing key for ${domain}...`);
-  await keyTool.createSigningKey(keyOptions, true);
-  console.log(`[Job ${job.jobId}] Signing key created successfully.`);
+
+  if (!keyOptions) {
+    // Generate new key options if none exist.
+    const randomPart = Math.random().toString(36).substring(2, 8);
+    const generatedPassword = domain + randomPart;
+    console.log(`[Job ${job.jobId}] Generated new signing key password: ${generatedPassword}`);
+
+    keyOptions = {
+      path: keystorePath,
+      alias: domain,
+      password: generatedPassword,
+      keypassword: generatedPassword,
+      fullName: domain,
+      organizationalUnit: "Development",
+      organization: "DefaultOrg",
+      country: "US"
+    };
+
+    console.log(`[Job ${job.jobId}] Creating signing key for ${domain}...`);
+    await keyTool.createSigningKey(keyOptions, true);
+    console.log(`[Job ${job.jobId}] Signing key created successfully.`);
+
+    // Save the new key options in the keystores table.
+    db.run(
+      "INSERT OR REPLACE INTO keystores (domain, jobId, keystorePath, password, keypassword, fullName, organizationalUnit, organization, country) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [domain, job.jobId, keyOptions.path, keyOptions.password, keyOptions.keypassword, keyOptions.fullName, keyOptions.organizationalUnit, keyOptions.organization, keyOptions.country],
+      (err) => {
+        if (err) console.error(`[Job ${job.jobId}] Error inserting keystore info:`, err);
+        else console.log(`[Job ${job.jobId}] Keystore info saved in database.`);
+      }
+    );
+  } else {
+    console.log(`[Job ${job.jobId}] Found existing keystore for ${domain} in database.`);
+  }
 
   // Create a JarSigner instance.
   const jarSigner = new JarSigner(jdkHelper);
@@ -246,13 +305,12 @@ async function processConversionJob(job) {
     throw new Error(`Unsigned APK file not found at expected location: ${unsignedApkPath}`);
   }
   console.log(`[Job ${job.jobId}] Found unsigned APK file at ${unsignedApkPath}.`);
-
   const signedApkPathTemp = path.join(projectDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-signed.apk');
   console.log(`[Job ${job.jobId}] Signing APK using JarSigner...`);
   await jarSigner.sign(
-    { path: keystorePath, alias: domain },
-    generatedPassword,
-    generatedPassword,
+    { path: keyOptions.path, alias: keyOptions.alias },
+    keyOptions.password,
+    keyOptions.keypassword,
     unsignedApkPath,
     signedApkPathTemp
   );
@@ -264,13 +322,12 @@ async function processConversionJob(job) {
     throw new Error(`Unsigned AAB file not found at expected location: ${unsignedAabPath}`);
   }
   console.log(`[Job ${job.jobId}] Found unsigned AAB file at ${unsignedAabPath}.`);
-
   const signedAabPathTemp = path.join(projectDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release-signed.aab');
   console.log(`[Job ${job.jobId}] Signing AAB using JarSigner...`);
   await jarSigner.sign(
-    { path: keystorePath, alias: domain },
-    generatedPassword,
-    generatedPassword,
+    { path: keyOptions.path, alias: keyOptions.alias },
+    keyOptions.password,
+    keyOptions.keypassword,
     unsignedAabPath,
     signedAabPathTemp
   );
@@ -278,8 +335,6 @@ async function processConversionJob(job) {
 
   // ──────────────────────────────────────────────────────────────
   // COPY OUTPUT FILES
-  // ──────────────────────────────────────────────────────────────
-
   const outputDir = path.join(__dirname, '..', config.outputDir);
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -332,7 +387,6 @@ async function processQueue() {
 // API ENDPOINTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The /convert endpoint expects a JSON payload with "url" and "manifestUrl".
 app.post('/convert', async (req, res) => {
   try {
     console.log("Request body:", req.body);
@@ -350,14 +404,12 @@ app.post('/convert', async (req, res) => {
         details: missingParams,
       });
     }
-    // Validate URL format.
     try {
       new URL(url);
       new URL(manifestUrl);
     } catch (e) {
       return res.status(400).json({ error: "Invalid URL format." });
     }
-    // Convert manifestUrl to a URL object.
     const manifestURLObject = new URL(manifestUrl);
     const jobId = uuidv4();
     const created = Date.now();
@@ -369,7 +421,7 @@ app.post('/convert', async (req, res) => {
       error: null,
     };
     insertJob(jobId, 'pending', created);
-    // Optionally, if you already have a project for the given URL and manifest, 
+    // Optionally, if you already have a project for the given URL and manifest,
     // you can include a "projectDir" property in the job object.
     jobQueue.push({
       jobId,
