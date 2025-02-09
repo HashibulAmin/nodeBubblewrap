@@ -7,6 +7,11 @@ Convert Progressive Web Apps (PWAs) into APK/AAB files using a REST API with Bub
 npm install
 ```
 
+## Start Development Server
+```bash
+npm run dev
+```
+
 ## Start Server
 ```bash
 npm start
