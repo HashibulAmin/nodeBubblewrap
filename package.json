@@ -8,10 +8,12 @@
     "dev": "nodemon src/app.js"
   },
   "dependencies": {
+    "@bubblewrap/core": "^1.22.3",
+    "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.17.1",
-    "multer": "^1.4.5-lts.1",
-    "node-fetch": "^2.6.9",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
     "sharp": "^0.32.1",
     "sqlite3": "^5.1.7",
     "uuid": "^11.0.5"
