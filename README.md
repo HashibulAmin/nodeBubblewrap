@@ -179,6 +179,8 @@ ANDROID_HOME=/usr/lib/android-sdk
 ANDROID_NDK=/opt/android-ndk
 JAVA_HOME=/path/to/your/jdk
 MAX_FILE_SIZE=10mb
+maxProcess=3
+maxConvertProcess=2
 ```
 
 Set up required directories:
