@@ -104,7 +104,12 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 const jobs = {};
 const jobQueue = [];
-let isProcessing = false;
+// let isProcessing = false;
+
+let activeJobs = 0;
+
+const maxJobs = process.env.maxProcess || 2
+
 
 function insertJob(jobId, status, created) {
   db.run(
@@ -125,6 +130,25 @@ function updateJob(jobId, status, files, error) {
       if (err) console.error("Error updating job:", err);
     }
   );
+}
+
+
+async function robustFetch(url, options = {}, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response;
+    } catch (error) {
+      if (attempt === retries) {
+        throw error;
+      }
+      console.warn(`Fetch attempt ${attempt} failed. Retrying...`, error);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +184,7 @@ async function processConversionJob(job) {
 
     // Download the manifest.
     console.log(`[Job ${job.jobId}] Downloading manifest from ${job.manifestUrl.toString()}...`);
-    const response = await fetch(job.manifestUrl.toString());
+    const response = await robustFetch(job.manifestUrl.toString());
     if (!response.ok) {
       throw new Error(`Failed to fetch manifest: HTTP ${response.status}`);
     }
@@ -179,7 +203,14 @@ async function processConversionJob(job) {
 
     // Initialize the TWA generator and create the TWA project.
     console.log(`[Job ${job.jobId}] Initializing TWA generator...`);
-    const generator = new TwaGenerator();
+    let generator;
+    try {
+      generator = new TwaGenerator();
+    } catch (err) {
+      console.error(`[Job ${job.jobId}] Error initializing TWA generator:`, err);
+      throw err;
+    }
+    // const generator = new TwaGenerator();
     const logObj = { log: (msg) => console.log(msg) };
     await generator.createTwaProject(projectDir, twaManifest, logObj);
     console.log(`[Job ${job.jobId}] TWA project created.`);
@@ -363,31 +394,73 @@ async function processConversionJob(job) {
 }
 
 async function processQueue() {
-  if (isProcessing || jobQueue.length === 0) return;
-  isProcessing = true;
-  const job = jobQueue.shift();
-  try {
-    const files = await processConversionJob(job);
-    jobs[job.jobId].status = 'completed';
-    jobs[job.jobId].files = files;
-    jobs[job.jobId].updated = Date.now();
-    updateJob(job.jobId, 'completed', files, null);
-  } catch (error) {
-    console.error(`Error processing job ${job.jobId}:`, error);
-    jobs[job.jobId].status = 'failed';
-    jobs[job.jobId].error = "Internal server error.";
-    jobs[job.jobId].updated = Date.now();
-    updateJob(job.jobId, 'failed', null, "Internal server error.");
+  // As long as we have less than 2 active jobs and there are jobs waiting in the queue,
+  // continue processing.
+  while (activeJobs < maxJobs && jobQueue.length > 0) {
+    const job = jobQueue.shift();
+    activeJobs++;  // Increment the count since we are starting a new job.
+    
+    // Process the job asynchronously.
+    processConversionJob(job)
+      .then((files) => {
+        // Update job status upon successful processing.
+        jobs[job.jobId].status = 'completed';
+        jobs[job.jobId].files = files;
+        jobs[job.jobId].updated = Date.now();
+        updateJob(job.jobId, 'completed', files, null);
+      })
+      .catch((error) => {
+        // Handle errors during job processing.
+        console.error(`Error processing job ${job.jobId}:`, error);
+        jobs[job.jobId].status = 'failed';
+        jobs[job.jobId].error = "Internal server error.";
+        jobs[job.jobId].updated = Date.now();
+        updateJob(job.jobId, 'failed', null, "Internal server error.");
+      })
+      .finally(() => {
+        // When the job is finished (either success or error), decrement the counter.
+        activeJobs--;
+        // Check if there are any waiting jobs that can now be processed.
+        processQueue();
+      });
   }
-  isProcessing = false;
-  processQueue();
 }
+
+// async function processQueue() {
+//   if (isProcessing || jobQueue.length === 0) return;
+//   isProcessing = true;
+//   const job = jobQueue.shift();
+//   try {
+//     const files = await processConversionJob(job);
+//     jobs[job.jobId].status = 'completed';
+//     jobs[job.jobId].files = files;
+//     jobs[job.jobId].updated = Date.now();
+//     updateJob(job.jobId, 'completed', files, null);
+//   } catch (error) {
+//     console.error(`Error processing job ${job.jobId}:`, error);
+//     jobs[job.jobId].status = 'failed';
+//     jobs[job.jobId].error = "Internal server error.";
+//     jobs[job.jobId].updated = Date.now();
+//     updateJob(job.jobId, 'failed', null, "Internal server error.");
+//   }
+//   isProcessing = false;
+//   processQueue();
+// }
+
+
+// Create a route-specific limiter for the /convert endpoint.
+// This limits each IP to only 1 conversion job request every 15 minutes.
+const convertLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes window
+  max: process.env.maxConvertProcess || 2, // allow only one request per window per IP
+  message: "You can only request two conversion job every 15 minutes."
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API ENDPOINTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-app.post('/convert', async (req, res) => {
+app.post('/convert', convertLimiter, async (req, res) => {
   try {
     console.log("Request body:", req.body);
     const { url, manifestUrl } = req.body;
